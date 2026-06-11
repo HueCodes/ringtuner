@@ -1,8 +1,8 @@
 build/
 results/
+ringtuner-codex-prompt.md
 *.o
 *.dSYM/
 *.gcda
 *.gcno
 *.gcov
-
