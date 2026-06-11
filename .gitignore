@@ -1,0 +1,8 @@
+build/
+results/
+*.o
+*.dSYM/
+*.gcda
+*.gcno
+*.gcov
+
