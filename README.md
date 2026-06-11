@@ -72,6 +72,30 @@ Run the offline threshold tuning sweep:
 make tune
 ```
 
+Tune within one scenario's declared threshold range:
+
+```sh
+build/tune --scenario small_rx_ring_stress --csv results/tuning-small-ring.csv
+```
+
+Tune every built-in scenario as a matrix:
+
+```sh
+make tune-scenarios
+```
+
+Tune each scenario only against its declared traffic profile:
+
+```sh
+make tune-scenario-traffic
+```
+
+Compare tuned thresholds against realistic baselines:
+
+```sh
+make compare
+```
+
 Run tests, baselines, scenarios, tuning, and a generated local summary:
 
 ```sh
@@ -96,6 +120,7 @@ default                   overload_spike   no_coalescing_cpu_limited      42548 
 - Packet threshold and timer threshold coalescing.
 - CPU drains up to `service_budget` packets per interrupt.
 - Metrics include offered packets, delivered and drop ratios, interrupts per delivered packet, average batch size, final and max queue depth, queue occupancy percentiles, latency percentiles, unresolved queue depth, reward components, and total reward.
+- Scenario definitions include threshold ranges for scenario-scoped and all-scenario tuning. The tuner can optimize all traffic profiles, a named traffic profile, or each scenario's declared traffic profile.
 
 ## RL-Ready API
 

@@ -101,3 +101,31 @@ Highest-value next steps:
 - Compare the adaptive bandit against tuned thresholds in a small results table.
 - Fixed control-interval execution now exists through `irq_sim_run_control_loop`; remaining work is using it consistently in future RL benchmarks.
 - Keep one small sample result in docs and keep full generated CSVs ignored under `results/`.
+
+## Scenario Tuning Pass
+
+- Added `build/tune --scenario NAME` so tuning can use a scenario's ring capacity, service budget, traffic profile, episode length, interrupt cost, and declared threshold ranges.
+- Added `make tune-scenario` and extended `make report` with `results/tuning-small-ring.csv`.
+- Tuning CSV output now includes a `scenario` column.
+- Added tests that validate every scenario tuning range and run both endpoint candidates through the evaluator.
+
+## Scenario Matrix Pass
+
+- Refactored the tuning executable around a reusable sweep function.
+- Added `build/tune --scenario all` to tune every built-in scenario independently.
+- Added `make tune-scenarios` and extended `make report` with `results/tuning-scenarios.csv`.
+- Smoke-tested default tuning, single-scenario tuning, and all-scenario tuning.
+
+## Traffic Selection Pass
+
+- Added core support for evaluating a selected subset of traffic profiles.
+- Added `build/tune --traffic all|scenario|NAME|INDEX`.
+- Added `make tune-scenario-traffic` and extended `make report` with `results/tuning-scenario-traffic.csv`.
+- Added tests that compare selected-profile tuning against the existing all-profile evaluator and a direct one-profile run.
+
+## Comparison Pass
+
+- Added `build/compare` to compare tuned scenario thresholds against realistic baselines on held-out seeds.
+- Added `make compare` and extended `make report` with `results/comparison.csv`.
+- The comparison excludes `no_coalescing_oracle` because it is an idealized reference.
+- Smoke-tested one-scenario and all-scenario comparison runs.

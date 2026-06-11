@@ -59,6 +59,31 @@ These are improvements that can be added without network access, dependency inst
     - No dependency manager.
     - No public action.
 
+14. Add scenario-scoped tuning.
+    - `build/tune --scenario NAME` uses the scenario config and threshold bounds.
+    - Default tuning grids are filtered to the scenario range unless explicit grids are provided.
+    - Tuning CSV rows now include a scenario column.
+
+15. Add scenario tuning coverage.
+    - Validate every scenario tuning range.
+    - Run min and max scenario tuning points through the core evaluator.
+    - Add `make tune-scenario` and include a small-ring tuning artifact in `make report`.
+
+16. Add all-scenario tuning.
+    - `build/tune --scenario all` tunes each scenario independently.
+    - `make tune-scenarios` writes `results/tuning-scenarios.csv`.
+    - `make report` now includes the full scenario tuning matrix.
+
+17. Add traffic-selective tuning.
+    - `build/tune --traffic NAME` tunes one traffic profile.
+    - `build/tune --scenario all --traffic scenario` tunes each scenario only against its declared traffic profile.
+    - `make tune-scenario-traffic` writes `results/tuning-scenario-traffic.csv`.
+
+18. Add tuned baseline comparison.
+    - `build/compare` tunes scenario-declared traffic and evaluates held-out seeds.
+    - `make compare` writes `results/comparison.csv`.
+    - `make report` now includes the comparison artifact.
+
 ## Still Deferred
 
 1. Actual RL training with PPO or another learner.
@@ -76,4 +101,3 @@ These are improvements that can be added without network access, dependency inst
 
 5. Hardware calibration.
    - Needs measurements outside this local sandbox.
-

@@ -143,4 +143,4 @@ The C core exposes a small scenario suite:
 - `small_rx_ring_stress`
 - `low_cpu_budget_stress`
 
-Scenarios vary ring capacity, service budget, traffic profile, episode length, interrupt cost, and tuning threshold ranges. The benchmark CLI can run all scenarios with `build/ringtuner --scenario all`.
+Scenarios vary ring capacity, service budget, traffic profile, episode length, interrupt cost, and tuning threshold ranges. The benchmark CLI can run all scenarios with `build/ringtuner --scenario all`. The tuning CLI can tune one scenario with `build/tune --scenario NAME` or every scenario with `build/tune --scenario all`. Tuning can optimize all traffic profiles, one named traffic profile, or each scenario's declared traffic profile with `--traffic scenario`.

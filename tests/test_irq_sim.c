@@ -349,6 +349,39 @@ static void test_scenarios(void) {
     require_true(irq_scenario_by_index(irq_scenario_count()) == NULL, "scenario index bounds");
 }
 
+static void test_scenario_tuning_ranges(void) {
+    for (size_t i = 0u; i < irq_scenario_count(); i++) {
+        const irq_scenario_t *s = irq_scenario_by_index(i);
+        require_true(s != NULL, "scenario exists");
+        require_true(s->min_packet_threshold >= 1u, "scenario min packet threshold valid");
+        require_true(s->min_packet_threshold <= s->max_packet_threshold, "scenario packet range ordered");
+        require_true(s->max_packet_threshold <= s->cfg.ring_capacity, "scenario packet range fits ring");
+        require_true(s->min_timer_threshold <= s->max_timer_threshold, "scenario timer range ordered");
+        require_true(s->max_timer_threshold < IRQ_SIM_LATENCY_HIST, "scenario timer range fits histogram");
+
+        irq_tuning_result_t min_result;
+        irq_tuning_result_t max_result;
+        require_true(irq_tune_eval_profile(s->cfg,
+                                           s->cfg.traffic_profile,
+                                           s->min_packet_threshold,
+                                           s->min_timer_threshold,
+                                           1u,
+                                           1u,
+                                           &min_result),
+                     "scenario min tuning point runnable");
+        require_true(irq_tune_eval_profile(s->cfg,
+                                           s->cfg.traffic_profile,
+                                           s->max_packet_threshold,
+                                           s->max_timer_threshold,
+                                           1u,
+                                           1u,
+                                           &max_result),
+                     "scenario max tuning point runnable");
+        require_true(isfinite(min_result.reward), "scenario min reward finite");
+        require_true(isfinite(max_result.reward), "scenario max reward finite");
+    }
+}
+
 static void test_tuning_eval_deterministic(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     cfg.episode_ticks = 1000u;
@@ -371,6 +404,43 @@ static void test_tuning_eval_deterministic(void) {
     require_true(per_profile[IRQ_TRAFFIC_ZERO_IDLE].reward == 0.0, "zero idle tuning neutral");
 }
 
+static void test_tuning_eval_profile_selection(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.episode_ticks = 1000u;
+    irq_tuning_result_t all_profiles[IRQ_TRAFFIC_COUNT];
+    irq_tuning_result_t selected_profiles[IRQ_TRAFFIC_COUNT];
+    irq_tuning_result_t one_profile;
+    bool enabled[IRQ_TRAFFIC_COUNT] = {false};
+    bool all_enabled[IRQ_TRAFFIC_COUNT];
+    double all_mean = 0.0;
+    double all_worst = 0.0;
+    double selected_mean = 0.0;
+    double selected_worst = 0.0;
+
+    for (int t = 0; t < (int)IRQ_TRAFFIC_COUNT; t++) {
+        all_enabled[t] = true;
+    }
+    require_true(irq_tune_eval_all_profiles(cfg, 4u, 4u, 1u, 2u, all_profiles, &all_mean, &all_worst),
+                 "all-profile tune eval");
+    require_true(irq_tune_eval_profiles(cfg, all_enabled, 4u, 4u, 1u, 2u, selected_profiles, &selected_mean, &selected_worst),
+                 "selected all-profile tune eval");
+    require_true(all_mean == selected_mean, "selected all mean matches");
+    require_true(all_worst == selected_worst, "selected all worst matches");
+
+    enabled[IRQ_TRAFFIC_BURSTY] = true;
+    require_true(irq_tune_eval_profile(cfg, IRQ_TRAFFIC_BURSTY, 4u, 4u, 1u, 2u, &one_profile), "one profile eval");
+    require_true(irq_tune_eval_profiles(cfg, enabled, 4u, 4u, 1u, 2u, selected_profiles, &selected_mean, &selected_worst),
+                 "single selected profile tune eval");
+    require_true(selected_mean == one_profile.reward, "single selected mean matches profile reward");
+    require_true(selected_worst == one_profile.reward, "single selected worst matches profile reward");
+    require_true(selected_profiles[IRQ_TRAFFIC_BURSTY].interrupts == one_profile.interrupts,
+                 "single selected metrics populated");
+
+    enabled[IRQ_TRAFFIC_BURSTY] = false;
+    require_true(!irq_tune_eval_profiles(cfg, enabled, 4u, 4u, 1u, 2u, selected_profiles, &selected_mean, &selected_worst),
+                 "empty traffic selection rejected");
+}
+
 int main(void) {
     test_config_validation();
     test_reproducible();
@@ -391,7 +461,9 @@ int main(void) {
     test_edge_configs();
     test_reward_components();
     test_scenarios();
+    test_scenario_tuning_ranges();
     test_tuning_eval_deterministic();
+    test_tuning_eval_profile_selection();
     puts("ok");
     return 0;
 }

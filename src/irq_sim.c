@@ -655,12 +655,41 @@ bool irq_tune_eval_all_profiles(irq_sim_config_t cfg,
                                 irq_tuning_result_t per_profile[IRQ_TRAFFIC_COUNT],
                                 double *mean_reward,
                                 double *worst_reward) {
-    if (per_profile == NULL || mean_reward == NULL || worst_reward == NULL) {
+    bool enabled[IRQ_TRAFFIC_COUNT];
+    for (int t = 0; t < (int)IRQ_TRAFFIC_COUNT; t++) {
+        enabled[t] = true;
+    }
+    return irq_tune_eval_profiles(cfg,
+                                  enabled,
+                                  packet_threshold,
+                                  timer_threshold,
+                                  seed_start,
+                                  seed_count,
+                                  per_profile,
+                                  mean_reward,
+                                  worst_reward);
+}
+
+bool irq_tune_eval_profiles(irq_sim_config_t cfg,
+                            const bool enabled[IRQ_TRAFFIC_COUNT],
+                            uint32_t packet_threshold,
+                            uint32_t timer_threshold,
+                            uint64_t seed_start,
+                            uint64_t seed_count,
+                            irq_tuning_result_t per_profile[IRQ_TRAFFIC_COUNT],
+                            double *mean_reward,
+                            double *worst_reward) {
+    if (enabled == NULL || per_profile == NULL || mean_reward == NULL || worst_reward == NULL) {
         return false;
     }
     *mean_reward = 0.0;
     *worst_reward = DBL_MAX;
+    uint32_t selected = 0u;
     for (int t = 0; t < (int)IRQ_TRAFFIC_COUNT; t++) {
+        memset(&per_profile[t], 0, sizeof(per_profile[t]));
+        if (!enabled[t]) {
+            continue;
+        }
         if (!irq_tune_eval_profile(cfg,
                                    (irq_traffic_profile_t)t,
                                    packet_threshold,
@@ -671,11 +700,15 @@ bool irq_tune_eval_all_profiles(irq_sim_config_t cfg,
             return false;
         }
         *mean_reward += per_profile[t].reward;
+        selected++;
         if (per_profile[t].reward < *worst_reward) {
             *worst_reward = per_profile[t].reward;
         }
     }
-    *mean_reward /= (double)IRQ_TRAFFIC_COUNT;
+    if (selected == 0u) {
+        return false;
+    }
+    *mean_reward /= (double)selected;
     return true;
 }
 
