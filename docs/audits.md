@@ -58,3 +58,46 @@
 - Ran `make test` and `make tune` successfully after the changes.
 - Ran targeted CLI checks for selected profile/policy, direct threshold mode, and filtered CSV output.
 - Remaining limitation: the tuning sweep is grid search, not RL training.
+
+## Resume-Grade Audit
+
+Simulator correctness risks:
+
+- The model is still single-queue and tick-based. It is useful for control experiments, not NIC fidelity claims.
+- CPU service is compressed into one tick. `service_budget` bounds packet delivery per interrupt, but the model does not simulate service time, NAPI polling, or IRQ affinity.
+- `no_coalescing_oracle` is intentionally idealized and must remain labeled as an oracle in output and docs.
+- Traffic profiles are deterministic and synthetic. They exercise control behavior, but they are not trace-derived.
+
+Test coverage gaps:
+
+- Tests now cover invalid actions, invalid configs, max ring capacity, ring capacity 1, service budget 1, timer threshold 0, packet threshold equal to ring capacity, one-tick episodes, metrics accounting, scenario lookup, reward components, and oracle versus CPU-limited no coalescing.
+- Tuning candidate evaluation now has direct deterministic tests through the core API.
+- A zero-arrival traffic profile now covers no-arrivals accounting and neutral reward behavior.
+- Remaining gap: full CLI grid traversal is still smoke-tested rather than exhaustively unit-tested.
+
+Reward hacking risks:
+
+- Immediate-service settings still win many profiles because interrupt cost is modest compared with latency penalties.
+- Agents can still overfit synthetic profile timing unless evaluated on held-out seeds and scenarios.
+- Drops dominate reward under overload, which is intentional, but it can make all realistic policies look similarly negative when service capacity is below offered load.
+- Setting-change penalty is simple and may not match a real control-plane cost.
+
+Benchmark fairness issues:
+
+- `no_coalescing_oracle` should not be compared as a feasible production policy.
+- `simple_adaptive` updates every 32 ticks while the RL step API can act every tick. Wrappers should choose and document a control interval.
+- Scenario results vary ring capacity and service budget, so cross-scenario policy comparisons should report scenario settings.
+- Runtime timings are useful for smoke checks, not stable performance benchmarks.
+
+Resume-readiness gaps:
+
+- The project is credible as a C systems simulator with deterministic baselines and offline tuning.
+- It should not claim hardware accuracy, production NIC behavior, or completed RL training.
+- PufferLib integration is documented but not implemented.
+- A learned controller is still future work. The simple adaptive policy is heuristic, and the adaptive bandit is a small baseline controller, not deep RL.
+
+Highest-value next steps:
+
+- Compare the adaptive bandit against tuned thresholds in a small results table.
+- Fixed control-interval execution now exists through `irq_sim_run_control_loop`; remaining work is using it consistently in future RL benchmarks.
+- Keep one small sample result in docs and keep full generated CSVs ignored under `results/`.

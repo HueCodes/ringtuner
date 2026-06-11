@@ -11,13 +11,16 @@ Version 1 models one NIC RX queue with discrete ticks. Packet arrivals enter a f
 - The RX ring has configurable capacity from 1 to `IRQ_SIM_MAX_RING`.
 - Packet arrivals are generated before interrupt checks in each tick.
 - CPU service occurs only on interrupt.
-- One coalesced interrupt can fire per tick. The `no_coalescing` baseline is a special comparison mode that emits one interrupt per delivered packet.
+- One coalesced interrupt can fire per tick.
 - CPU service drains up to `service_budget` packets from the ring.
+- `no_coalescing_oracle` is an idealized comparison mode that can emit one interrupt per queued packet in one tick.
+- `no_coalescing_cpu_limited` interrupts as soon as packets are queued, but still drains at most `service_budget` packets in a tick.
 
 ## Traffic
 
 Traffic generation is deterministic from the seed and tick count. Profiles:
 
+- `zero_idle`: no arrivals, used for edge-case accounting.
 - `steady_low`: sparse Bernoulli arrivals.
 - `steady_high`: frequent arrivals with occasional two-packet ticks.
 - `bursty`: low background plus periodic bursts.
@@ -43,15 +46,24 @@ Arrivals are dropped when the RX ring is full. Drops are counted immediately. Dr
 
 The simulator records:
 
+- offered packets
 - delivered packets
 - dropped packets
+- delivered ratio
+- drop ratio
 - interrupts
+- interrupts per delivered packet
+- average batch size
 - interrupt cost
 - p50, p95, and p99 latency
+- latency sample count
 - average latency
 - average queue depth
+- p50, p95, and p99 queue depth
+- max queue depth
 - reward score
 - final queue depth
+- reward components
 
 Latency is measured as `delivery_tick - arrival_tick + 1`, so same-tick delivery has latency 1.
 
@@ -96,12 +108,18 @@ Actions map to stable packet and timer thresholds. Invalid actions are rejected.
 Baseline policies:
 
 - no coalescing oracle
+- no coalescing CPU-limited
 - fixed low latency
 - fixed balanced
 - fixed throughput
 - simple adaptive
+- adaptive bandit
 
-The adaptive baseline updates every 32 ticks. RL comparisons should use a stated control interval, since per-tick actions have more control authority.
+The simple adaptive baseline updates every 32 ticks. The adaptive bandit baseline uses deterministic epsilon-greedy selection over the discrete action set with a 64-tick control window. It is an offline adaptive controller baseline, not PPO or deep RL. RL comparisons should use a stated control interval, since per-tick actions have more control authority.
+
+## Control Interval
+
+`irq_sim_run_control_loop` runs any action selector callback at a fixed control interval. It applies one action, advances up to `control_interval` ticks, then exposes an observation for the next decision. This creates a fair comparison point for fixed actions, heuristic controllers, the adaptive bandit, and future RL policies.
 
 ## Limitations
 
@@ -110,5 +128,19 @@ The adaptive baseline updates every 32 ticks. RL comparisons should use a stated
 - CPU service time is compressed into one tick.
 - Packet classes affect arrival shape only.
 - Coalescing state is simpler than real NIC hardware.
-- The no-coalescing baseline is an oracle-style comparison mode, not a hardware timing claim.
+- The no-coalescing oracle baseline is not a hardware timing claim.
 - Metrics are simulator metrics, not hardware claims.
+
+## Scenarios
+
+The C core exposes a small scenario suite:
+
+- `latency_sensitive_low_load`
+- `high_throughput_steady_load`
+- `microburst_workload`
+- `elephant_flow_burst`
+- `overload_with_recovery`
+- `small_rx_ring_stress`
+- `low_cpu_budget_stress`
+
+Scenarios vary ring capacity, service budget, traffic profile, episode length, interrupt cost, and tuning threshold ranges. The benchmark CLI can run all scenarios with `build/ringtuner --scenario all`.
