@@ -7,13 +7,18 @@
 #include <sys/stat.h>
 #include <time.h>
 
+typedef struct {
+    uint32_t arrivals[IRQ_SIM_MAX_TICKS];
+    uint64_t ticks;
+} trace_t;
+
 static void usage(const char *prog) {
     printf(
             "usage: %s [--ticks N] [--seed N] [--ring N] [--budget N]\n"
             "          [--profile NAME|INDEX] [--policy NAME|INDEX] [--direct]\n"
             "          [--action NAME|INDEX] [--control-interval N]\n"
             "          [--packet-threshold N] [--timer-threshold N]\n"
-            "          [--scenario NAME|all] [--csv results/file.csv]\n"
+            "          [--scenario NAME|all] [--trace traces/file.csv] [--csv results/file.csv]\n"
             "          [--list-profiles] [--list-policies] [--list-actions] [--list-scenarios] [--help]\n",
             prog);
 }
@@ -137,6 +142,55 @@ static bool csv_path_allowed(const char *path) {
     return path != NULL && strncmp(path, "results/", 8u) == 0 && strstr(path, "..") == NULL;
 }
 
+static bool trace_path_allowed(const char *path) {
+    return path != NULL && strncmp(path, "traces/", 7u) == 0 && strstr(path, "..") == NULL;
+}
+
+static bool load_trace(const char *path, trace_t *trace) {
+    FILE *f = fopen(path, "r");
+    if (f == NULL || trace == NULL) {
+        if (f != NULL) {
+            fclose(f);
+        }
+        return false;
+    }
+    memset(trace, 0, sizeof(*trace));
+    char line[256];
+    uint64_t lineno = 0u;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        lineno++;
+        line[strcspn(line, "\r\n")] = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == '\0' || *p == '\n' || *p == '#') {
+            continue;
+        }
+        if (lineno == 1u && strncmp(p, "tick", 4u) == 0) {
+            continue;
+        }
+        char *comma = strchr(p, ',');
+        if (comma == NULL) {
+            fclose(f);
+            return false;
+        }
+        *comma = '\0';
+        uint64_t tick = 0u;
+        uint32_t arrivals = 0u;
+        if (!parse_u64(p, &tick) || !parse_u32_arg(comma + 1, &arrivals) || tick >= IRQ_SIM_MAX_TICKS) {
+            fclose(f);
+            return false;
+        }
+        trace->arrivals[tick] = arrivals;
+        if (tick + 1u > trace->ticks) {
+            trace->ticks = tick + 1u;
+        }
+    }
+    fclose(f);
+    return trace->ticks > 0u;
+}
+
 static void print_header(FILE *out) {
     fprintf(out,
             "%-25s %-16s %-26s %9s %9s %7s %7s %7s %8s %8s %8s %8s %9s %8s\n",
@@ -241,6 +295,21 @@ static bool run_direct(const irq_sim_config_t *cfg, irq_sim_metrics_t *out) {
     return true;
 }
 
+static bool run_direct_trace(const irq_sim_config_t *cfg, const trace_t *trace, irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (trace == NULL || !irq_sim_reset(&sim, cfg)) {
+        return false;
+    }
+    while (!sim.done) {
+        const uint32_t arrivals = sim.tick < trace->ticks ? trace->arrivals[sim.tick] : 0u;
+        if (!irq_sim_step_arrivals(&sim, arrivals)) {
+            return false;
+        }
+    }
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
 static bool fixed_action_selector(const irq_sim_t *sim, const double obs[IRQ_SIM_OBS_SIZE], void *ctx, irq_action_t *action) {
     (void)sim;
     (void)obs;
@@ -266,6 +335,9 @@ int main(int argc, char **argv) {
     irq_traffic_profile_t selected_profile = IRQ_TRAFFIC_STEADY_LOW;
     irq_baseline_policy_t selected_policy = IRQ_POLICY_FIXED_BALANCED;
     irq_action_t selected_action = IRQ_ACTION_BALANCED_LOW;
+    const char *trace_path = NULL;
+    trace_t trace;
+    memset(&trace, 0, sizeof(trace));
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
@@ -347,6 +419,12 @@ int main(int argc, char **argv) {
                 list_scenarios(stderr);
                 return 2;
             }
+        } else if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
+            trace_path = argv[++i];
+            if (!trace_path_allowed(trace_path)) {
+                fprintf(stderr, "trace path must be under traces/ and must not contain ..\n");
+                return 2;
+            }
         } else if (strcmp(argv[i], "--csv") == 0 && i + 1 < argc) {
             csv_path = argv[++i];
             if (!csv_path_allowed(csv_path)) {
@@ -366,6 +444,25 @@ int main(int argc, char **argv) {
     if (direct && one_action) {
         fprintf(stderr, "--direct and --action are mutually exclusive\n");
         return 2;
+    }
+    if (trace_path != NULL && scenario_name != NULL) {
+        fprintf(stderr, "--trace and --scenario are mutually exclusive\n");
+        return 2;
+    }
+    if (trace_path != NULL && one_action) {
+        fprintf(stderr, "--trace and --action are not supported together\n");
+        return 2;
+    }
+    if (trace_path != NULL && !load_trace(trace_path, &trace)) {
+        fprintf(stderr, "failed to load trace: %s\n", trace_path);
+        return 2;
+    }
+    if (trace_path != NULL) {
+        cfg.episode_ticks = trace.ticks;
+        if (!one_profile) {
+            selected_profile = cfg.traffic_profile;
+            one_profile = true;
+        }
     }
 
     char err[128];
@@ -433,7 +530,12 @@ int main(int argc, char **argv) {
                     policy_name = controlled_name;
                     ok = run_controlled_action(&cfg, selected_action, control_interval, &m);
                 } else {
-                    ok = direct ? run_direct(&cfg, &m) : irq_sim_run_baseline(&cfg, (irq_baseline_policy_t)p, &m);
+                    if (trace_path != NULL) {
+                        ok = direct ? run_direct_trace(&cfg, &trace, &m)
+                                    : irq_sim_run_baseline_trace(&cfg, (irq_baseline_policy_t)p, trace.arrivals, trace.ticks, &m);
+                    } else {
+                        ok = direct ? run_direct(&cfg, &m) : irq_sim_run_baseline(&cfg, (irq_baseline_policy_t)p, &m);
+                    }
                 }
                 if (!ok) {
                     fprintf(stderr, "run failed for %s/%s\n", irq_traffic_name((irq_traffic_profile_t)t), policy_name);

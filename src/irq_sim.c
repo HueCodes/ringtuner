@@ -172,6 +172,7 @@ const char *irq_policy_name(irq_baseline_policy_t policy) {
         "fixed_throughput",
         "simple_adaptive",
         "adaptive_bandit",
+        "napi_polling",
     };
     if ((unsigned)policy >= IRQ_POLICY_COUNT) {
         return "invalid";
@@ -302,13 +303,15 @@ static bool interrupt_due(const irq_sim_t *sim) {
     return (sim->tick - sim->first_queued_tick) >= sim->cfg.timer_threshold;
 }
 
-static void service_interrupt(irq_sim_t *sim) {
+static void service_batch(irq_sim_t *sim, bool count_interrupt) {
     uint32_t n = sim->interrupt_per_packet ? 1u : sim->cfg.service_budget;
     if (n > sim->ring_count) {
         n = sim->ring_count;
     }
-    sim->interrupts = sat_add_u64(sim->interrupts, 1u);
-    sim->recent_interrupts = sat_add_u64(sim->recent_interrupts, 1u);
+    if (count_interrupt) {
+        sim->interrupts = sat_add_u64(sim->interrupts, 1u);
+        sim->recent_interrupts = sat_add_u64(sim->recent_interrupts, 1u);
+    }
     for (uint32_t i = 0u; i < n; i++) {
         const uint64_t arrival_tick = sim->ring[sim->ring_head];
         const uint64_t latency = sim->tick - arrival_tick + 1u;
@@ -326,6 +329,10 @@ static void service_interrupt(irq_sim_t *sim) {
     }
 }
 
+static void service_interrupt(irq_sim_t *sim) {
+    service_batch(sim, true);
+}
+
 static void record_queue_depth(irq_sim_t *sim) {
     uint32_t depth = sim->ring_count;
     if (depth > IRQ_SIM_MAX_RING) {
@@ -338,11 +345,10 @@ static void record_queue_depth(irq_sim_t *sim) {
     }
 }
 
-bool irq_sim_step(irq_sim_t *sim) {
+bool irq_sim_step_arrivals(irq_sim_t *sim, uint32_t arrivals) {
     if (sim == NULL || sim->done) {
         return false;
     }
-    const uint32_t arrivals = traffic_arrivals(sim);
     for (uint32_t i = 0u; i < arrivals; i++) {
         enqueue_arrival(sim);
     }
@@ -361,6 +367,13 @@ bool irq_sim_step(irq_sim_t *sim) {
         sim->done = true;
     }
     return true;
+}
+
+bool irq_sim_step(irq_sim_t *sim) {
+    if (sim == NULL || sim->done) {
+        return false;
+    }
+    return irq_sim_step_arrivals(sim, traffic_arrivals(sim));
 }
 
 bool irq_sim_apply_baseline(irq_sim_t *sim, irq_baseline_policy_t policy) {
@@ -405,6 +418,10 @@ bool irq_sim_apply_baseline(irq_sim_t *sim, irq_baseline_policy_t policy) {
         break;
     }
     case IRQ_POLICY_ADAPTIVE_BANDIT:
+        sim->interrupt_per_packet = false;
+        set_thresholds(sim, 8u, 16u);
+        break;
+    case IRQ_POLICY_NAPI_POLLING:
         sim->interrupt_per_packet = false;
         set_thresholds(sim, 8u, 16u);
         break;
@@ -815,10 +832,120 @@ static bool irq_sim_run_adaptive_bandit(const irq_sim_config_t *cfg, irq_sim_met
     return true;
 }
 
+static bool trace_arrivals_at(const uint32_t *arrivals, uint64_t arrival_ticks, uint64_t tick, uint32_t *out) {
+    if (out == NULL) {
+        return false;
+    }
+    *out = (arrivals != NULL && tick < arrival_ticks) ? arrivals[tick] : 0u;
+    return true;
+}
+
+static bool irq_sim_run_adaptive_bandit_trace(const irq_sim_config_t *cfg,
+                                              const uint32_t *arrivals,
+                                              uint64_t arrival_ticks,
+                                              irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (out == NULL || !irq_sim_reset(&sim, cfg)) {
+        return false;
+    }
+    double values[IRQ_ACTION_COUNT] = {0.0};
+    uint64_t counts[IRQ_ACTION_COUNT] = {0u};
+    uint64_t rng = cfg->seed == 0u ? 0x9e3779b97f4a7c15ull : cfg->seed ^ 0xa5a5a5a5a5a5a5a5ull;
+    const uint64_t control_window = 64u;
+    irq_action_t action = IRQ_ACTION_BALANCED_LOW;
+    (void)irq_sim_apply_action(&sim, action);
+    double window_start_reward = irq_sim_reward(&sim);
+
+    while (!sim.done) {
+        uint32_t tick_arrivals = 0u;
+        if ((sim.tick % control_window) == 0u && sim.tick > 0u) {
+            const double window_reward = irq_sim_reward(&sim) - window_start_reward;
+            bandit_update(values, counts, action, window_reward);
+            action = bandit_choose_action(values, counts, &rng);
+            if (!irq_sim_apply_action(&sim, action)) {
+                return false;
+            }
+            window_start_reward = irq_sim_reward(&sim);
+        }
+        if (!trace_arrivals_at(arrivals, arrival_ticks, sim.tick, &tick_arrivals) ||
+            !irq_sim_step_arrivals(&sim, tick_arrivals)) {
+            return false;
+        }
+    }
+    const double final_window_reward = irq_sim_reward(&sim) - window_start_reward;
+    bandit_update(values, counts, action, final_window_reward);
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
+static bool irq_sim_step_napi_arrivals(irq_sim_t *sim, uint32_t arrivals, bool *polling, uint32_t *idle_polls) {
+    if (sim == NULL || polling == NULL || idle_polls == NULL || sim->done) {
+        return false;
+    }
+    for (uint32_t i = 0u; i < arrivals; i++) {
+        enqueue_arrival(sim);
+    }
+
+    if (*polling) {
+        if (sim->ring_count > 0u) {
+            service_batch(sim, false);
+            *idle_polls = 0u;
+        } else {
+            (*idle_polls)++;
+            if (*idle_polls >= 2u) {
+                *polling = false;
+                *idle_polls = 0u;
+            }
+        }
+    } else if (interrupt_due(sim)) {
+        service_batch(sim, true);
+        *polling = true;
+        *idle_polls = 0u;
+    }
+
+    record_queue_depth(sim);
+    sim->tick++;
+    if (sim->tick >= sim->cfg.episode_ticks) {
+        sim->done = true;
+    }
+    return true;
+}
+
+static bool irq_sim_run_napi_polling(const irq_sim_config_t *cfg,
+                                     const uint32_t *arrivals,
+                                     uint64_t arrival_ticks,
+                                     bool use_trace,
+                                     irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (out == NULL || !irq_sim_reset(&sim, cfg) || !irq_sim_apply_baseline(&sim, IRQ_POLICY_NAPI_POLLING)) {
+        return false;
+    }
+    bool polling = false;
+    uint32_t idle_polls = 0u;
+    while (!sim.done) {
+        uint32_t tick_arrivals = 0u;
+        if (use_trace) {
+            if (!trace_arrivals_at(arrivals, arrival_ticks, sim.tick, &tick_arrivals)) {
+                return false;
+            }
+        } else {
+            tick_arrivals = traffic_arrivals(&sim);
+        }
+        if (!irq_sim_step_napi_arrivals(&sim, tick_arrivals, &polling, &idle_polls)) {
+            return false;
+        }
+    }
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
 bool irq_sim_run_baseline(const irq_sim_config_t *cfg, irq_baseline_policy_t policy, irq_sim_metrics_t *out) {
     irq_sim_t sim;
     if (policy == IRQ_POLICY_ADAPTIVE_BANDIT) {
         return irq_sim_run_adaptive_bandit(cfg, out);
+    }
+    if (policy == IRQ_POLICY_NAPI_POLLING) {
+        return irq_sim_run_napi_polling(cfg, NULL, 0u, false, out);
     }
     if (out == NULL || !irq_sim_reset(&sim, cfg) || !irq_sim_apply_baseline(&sim, policy)) {
         return false;
@@ -828,6 +955,35 @@ bool irq_sim_run_baseline(const irq_sim_config_t *cfg, irq_baseline_policy_t pol
             (void)irq_sim_apply_baseline(&sim, policy);
         }
         (void)irq_sim_step(&sim);
+    }
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
+bool irq_sim_run_baseline_trace(const irq_sim_config_t *cfg,
+                                irq_baseline_policy_t policy,
+                                const uint32_t *arrivals,
+                                uint64_t arrival_ticks,
+                                irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (policy == IRQ_POLICY_ADAPTIVE_BANDIT) {
+        return irq_sim_run_adaptive_bandit_trace(cfg, arrivals, arrival_ticks, out);
+    }
+    if (policy == IRQ_POLICY_NAPI_POLLING) {
+        return irq_sim_run_napi_polling(cfg, arrivals, arrival_ticks, true, out);
+    }
+    if (out == NULL || !irq_sim_reset(&sim, cfg) || !irq_sim_apply_baseline(&sim, policy)) {
+        return false;
+    }
+    while (!sim.done) {
+        uint32_t tick_arrivals = 0u;
+        if (policy == IRQ_POLICY_SIMPLE_ADAPTIVE && (sim.tick % 32u) == 0u) {
+            (void)irq_sim_apply_baseline(&sim, policy);
+        }
+        if (!trace_arrivals_at(arrivals, arrival_ticks, sim.tick, &tick_arrivals) ||
+            !irq_sim_step_arrivals(&sim, tick_arrivals)) {
+            return false;
+        }
     }
     *out = irq_sim_metrics(&sim);
     return true;

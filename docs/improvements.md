@@ -84,6 +84,28 @@ These are improvements that can be added without network access, dependency inst
     - `make compare` writes `results/comparison.csv`.
     - `make report` now includes the comparison artifact.
 
+19. Add trace replay.
+    - `build/ringtuner --trace traces/microburst.csv` replays deterministic arrival traces.
+    - `make trace` writes `results/trace-microburst.csv`.
+    - Unit tests compare direct stepping against trace baseline replay.
+
+20. Add Pareto frontier analysis.
+    - `build/pareto` emits non-dominated threshold candidates.
+    - `make pareto` writes `results/pareto.csv`.
+    - The frontier exposes reward, latency, interrupt, delivery, and drop tradeoffs.
+
+21. Add a generated report tool.
+    - `build/report` summarizes comparison, Pareto, and trace CSVs into `results/report.md`.
+    - `make report` now runs the C report generator instead of shell-appending a static artifact list.
+
+22. Add dependency-free CI.
+    - `.github/workflows/ci.yml` runs tests, comparison, Pareto, trace replay, and a small scenario tuning job.
+
+23. Add NAPI-style polling.
+    - `napi_polling` enters poll mode on an interrupt and drains budgeted batches without counting every poll as a hardware IRQ.
+    - Synthetic and trace replay runners both support the policy.
+    - Comparison CSVs now include the NAPI baseline.
+
 ## Still Deferred
 
 1. Actual RL training with PPO or another learner.
@@ -93,8 +115,8 @@ These are improvements that can be added without network access, dependency inst
 2. PufferLib Ocean integration.
    - Deferred until standalone behavior is stable.
 
-3. Real NIC trace replay.
-   - Needs external trace data or generated fixtures.
+3. Real NIC trace capture ingestion.
+   - Needs external trace data or a converter from packet captures or driver counters.
 
 4. Multi-queue simulation.
    - Useful, but larger than the current one-queue baseline.

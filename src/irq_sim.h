@@ -28,6 +28,7 @@ typedef enum {
     IRQ_POLICY_FIXED_THROUGHPUT,
     IRQ_POLICY_SIMPLE_ADAPTIVE,
     IRQ_POLICY_ADAPTIVE_BANDIT,
+    IRQ_POLICY_NAPI_POLLING,
     IRQ_POLICY_COUNT
 } irq_baseline_policy_t;
 
@@ -158,7 +159,13 @@ size_t irq_scenario_count(void);
 bool irq_sim_validate_config(const irq_sim_config_t *cfg, char *err, size_t err_len);
 bool irq_sim_reset(irq_sim_t *sim, const irq_sim_config_t *cfg);
 bool irq_sim_step(irq_sim_t *sim);
+bool irq_sim_step_arrivals(irq_sim_t *sim, uint32_t arrivals);
 bool irq_sim_run_baseline(const irq_sim_config_t *cfg, irq_baseline_policy_t policy, irq_sim_metrics_t *out);
+bool irq_sim_run_baseline_trace(const irq_sim_config_t *cfg,
+                                irq_baseline_policy_t policy,
+                                const uint32_t *arrivals,
+                                uint64_t arrival_ticks,
+                                irq_sim_metrics_t *out);
 bool irq_sim_apply_baseline(irq_sim_t *sim, irq_baseline_policy_t policy);
 bool irq_sim_apply_action(irq_sim_t *sim, irq_action_t action);
 bool irq_sim_episode_step(irq_sim_t *sim, irq_action_t action, double obs[IRQ_SIM_OBS_SIZE], double *reward, bool *done);

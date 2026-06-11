@@ -1,0 +1,18 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+      - run: make compare
+      - run: make pareto
+      - run: make trace
+      - run: build/tune --scenario all --traffic scenario --train-seeds 1 --eval-seeds 1 --csv results/ci-tuning.csv

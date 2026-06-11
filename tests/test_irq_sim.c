@@ -29,6 +29,17 @@ static irq_sim_metrics_t run_direct(irq_sim_config_t cfg) {
     return m;
 }
 
+static irq_sim_metrics_t run_direct_arrivals(irq_sim_config_t cfg, const uint32_t *arrivals) {
+    irq_sim_t sim;
+    require_true(irq_sim_reset(&sim, &cfg), "trace direct reset");
+    while (!sim.done) {
+        require_true(irq_sim_step_arrivals(&sim, arrivals[sim.tick]), "trace step");
+    }
+    irq_sim_metrics_t m = irq_sim_metrics(&sim);
+    require_true(isfinite(m.reward), "finite trace direct reward");
+    return m;
+}
+
 static bool fixed_action_selector(const irq_sim_t *sim, const double obs[IRQ_SIM_OBS_SIZE], void *ctx, irq_action_t *action) {
     (void)sim;
     (void)obs;
@@ -252,6 +263,65 @@ static void test_control_loop_fixed_interval(void) {
     require_true(!irq_sim_run_control_loop(&cfg, 32u, fixed_action_selector, &action, NULL), "null metrics rejected");
 }
 
+static void test_trace_arrivals(void) {
+    const uint32_t arrivals[] = {0u, 3u, 0u, 5u, 1u, 0u, 0u, 2u};
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_ZERO_IDLE;
+    cfg.ring_capacity = 64u;
+    cfg.service_budget = 8u;
+    cfg.packet_threshold = 1u;
+    cfg.timer_threshold = 0u;
+    cfg.episode_ticks = sizeof(arrivals) / sizeof(arrivals[0]);
+    irq_sim_metrics_t direct = run_direct_arrivals(cfg, arrivals);
+    irq_sim_metrics_t traced;
+    require_true(irq_sim_run_baseline_trace(&cfg,
+                                            IRQ_POLICY_NO_COALESCING_CPU_LIMITED,
+                                            arrivals,
+                                            cfg.episode_ticks,
+                                            &traced),
+                 "trace baseline run");
+    require_true(traced.offered == 11u, "trace offered packet count");
+    require_true(traced.delivered == 11u, "trace delivered packet count");
+    require_true(traced.dropped == 0u, "trace no drops");
+    require_true(traced.offered == direct.offered, "trace direct offered matches");
+    require_true(traced.delivered == direct.delivered, "trace direct delivered matches");
+
+    cfg.service_budget = 1u;
+    cfg.ring_capacity = 4u;
+    irq_sim_metrics_t overloaded;
+    require_true(irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_FIXED_THROUGHPUT, arrivals, cfg.episode_ticks, &overloaded),
+                 "trace overloaded run");
+    require_true(overloaded.dropped > 0u || overloaded.final_queue_depth > 0u, "trace stress creates pressure");
+    require_true(!irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_COUNT, arrivals, cfg.episode_ticks, &overloaded),
+                 "invalid trace policy rejected");
+}
+
+static void test_napi_polling(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_BURSTY;
+    cfg.episode_ticks = 800u;
+    cfg.ring_capacity = 128u;
+    cfg.service_budget = 16u;
+
+    irq_sim_metrics_t napi;
+    irq_sim_metrics_t low_latency;
+    require_true(irq_sim_run_baseline(&cfg, IRQ_POLICY_NAPI_POLLING, &napi), "napi polling run");
+    require_true(irq_sim_run_baseline(&cfg, IRQ_POLICY_FIXED_LOW_LATENCY, &low_latency), "low-latency baseline run");
+    require_true(napi.offered == low_latency.offered, "napi preserves offered traffic");
+    require_true(napi.delivered > 0u, "napi delivers packets");
+    require_true(napi.interrupts <= low_latency.interrupts, "napi counts fewer or equal interrupts");
+
+    const uint32_t arrivals[] = {0u, 8u, 8u, 8u, 0u, 0u, 1u, 0u};
+    cfg.traffic_profile = IRQ_TRAFFIC_ZERO_IDLE;
+    cfg.episode_ticks = sizeof(arrivals) / sizeof(arrivals[0]);
+    cfg.ring_capacity = 64u;
+    cfg.service_budget = 8u;
+    require_true(irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_NAPI_POLLING, arrivals, cfg.episode_ticks, &napi),
+                 "napi trace run");
+    require_true(napi.offered == 25u, "napi trace offered packet count");
+    require_true(napi.delivered > 0u, "napi trace delivers packets");
+}
+
 static void test_config_validation(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     char err[128];
@@ -457,6 +527,8 @@ int main(void) {
     test_zero_idle_profile();
     test_rl_api();
     test_control_loop_fixed_interval();
+    test_trace_arrivals();
+    test_napi_polling();
     test_unresolved_queue_penalty();
     test_edge_configs();
     test_reward_components();

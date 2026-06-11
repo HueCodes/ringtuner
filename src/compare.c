@@ -216,6 +216,7 @@ static bool compare_scenario(const irq_scenario_t *scenario,
         IRQ_POLICY_FIXED_THROUGHPUT,
         IRQ_POLICY_SIMPLE_ADAPTIVE,
         IRQ_POLICY_ADAPTIVE_BANDIT,
+        IRQ_POLICY_NAPI_POLLING,
     };
     irq_tuning_result_t tuned;
     avg_metrics_t fixed_balanced;

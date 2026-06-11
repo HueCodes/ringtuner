@@ -96,6 +96,18 @@ Compare tuned thresholds against realistic baselines:
 make compare
 ```
 
+Find non-dominated threshold tradeoffs:
+
+```sh
+make pareto
+```
+
+Replay the checked-in microburst trace:
+
+```sh
+make trace
+```
+
 Run tests, baselines, scenarios, tuning, and a generated local summary:
 
 ```sh
@@ -121,6 +133,9 @@ default                   overload_spike   no_coalescing_cpu_limited      42548 
 - CPU drains up to `service_budget` packets per interrupt.
 - Metrics include offered packets, delivered and drop ratios, interrupts per delivered packet, average batch size, final and max queue depth, queue occupancy percentiles, latency percentiles, unresolved queue depth, reward components, and total reward.
 - Scenario definitions include threshold ranges for scenario-scoped and all-scenario tuning. The tuner can optimize all traffic profiles, a named traffic profile, or each scenario's declared traffic profile.
+- Trace replay supports deterministic `traces/*.csv` arrival streams for reproducible workload fixtures.
+- Baselines include fixed coalescing, simple adaptive control, adaptive bandit control, and NAPI-style polling.
+- Pareto frontier analysis surfaces threshold candidates that trade reward, latency, interrupts, delivery, and drops without collapsing everything to one scalar.
 
 ## RL-Ready API
 
@@ -136,7 +151,7 @@ Initial discrete actions:
 
 ## Limitations
 
-This is not a hardware-accurate NIC model. It omits packet sizes, DMA descriptors, cache effects, NAPI polling, IRQ affinity, PCIe behavior, multiple queues, and explicit CPU service time. Results are useful for simulator and RL design work, not hardware claims.
+This is not a hardware-accurate NIC model. It omits packet sizes, DMA descriptors, cache effects, IRQ affinity, PCIe behavior, multiple queues, and explicit CPU service time. NAPI-style polling is modeled as a scheduling baseline, not as a driver-accurate kernel implementation. Trace replay currently models packet arrivals only. Results are useful for simulator and RL design work, not hardware claims.
 
 ## Next Step
 
