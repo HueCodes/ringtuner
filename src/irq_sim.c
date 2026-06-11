@@ -5,6 +5,65 @@
 #include <stdio.h>
 #include <string.h>
 
+static const irq_scenario_t scenarios[] = {
+    {
+        "latency_sensitive_low_load",
+        {128u, 32u, 2u, 4u, 4000u, 1u, 1.5, IRQ_TRAFFIC_STEADY_LOW},
+        1u,
+        16u,
+        0u,
+        32u,
+    },
+    {
+        "high_throughput_steady_load",
+        {512u, 64u, 32u, 64u, 6000u, 1u, 1.0, IRQ_TRAFFIC_STEADY_HIGH},
+        4u,
+        128u,
+        4u,
+        160u,
+    },
+    {
+        "microburst_workload",
+        {256u, 32u, 8u, 16u, 5000u, 1u, 1.0, IRQ_TRAFFIC_BURSTY},
+        1u,
+        64u,
+        0u,
+        96u,
+    },
+    {
+        "elephant_flow_burst",
+        {384u, 48u, 16u, 32u, 5000u, 1u, 1.0, IRQ_TRAFFIC_ELEPHANT_MOUSE},
+        1u,
+        96u,
+        0u,
+        128u,
+    },
+    {
+        "overload_with_recovery",
+        {256u, 32u, 8u, 16u, 5000u, 1u, 1.0, IRQ_TRAFFIC_OVERLOAD_SPIKE},
+        1u,
+        64u,
+        0u,
+        128u,
+    },
+    {
+        "small_rx_ring_stress",
+        {16u, 8u, 8u, 16u, 4000u, 1u, 1.0, IRQ_TRAFFIC_BURSTY},
+        1u,
+        16u,
+        0u,
+        64u,
+    },
+    {
+        "low_cpu_budget_stress",
+        {128u, 4u, 4u, 8u, 4000u, 1u, 1.0, IRQ_TRAFFIC_STEADY_HIGH},
+        1u,
+        64u,
+        0u,
+        128u,
+    },
+};
+
 static uint64_t sat_add_u64(uint64_t a, uint64_t b) {
     if (UINT64_MAX - a < b) {
         return UINT64_MAX;
@@ -38,6 +97,8 @@ static bool chance_per_1024(irq_sim_t *sim, uint32_t n) {
 static uint32_t traffic_arrivals(irq_sim_t *sim) {
     const uint64_t t = sim->tick;
     switch (sim->cfg.traffic_profile) {
+    case IRQ_TRAFFIC_ZERO_IDLE:
+        return 0u;
     case IRQ_TRAFFIC_STEADY_LOW:
         return chance_per_1024(sim, 160u) ? 1u : 0u;
     case IRQ_TRAFFIC_STEADY_HIGH: {
@@ -89,6 +150,7 @@ irq_sim_config_t irq_sim_default_config(void) {
 
 const char *irq_traffic_name(irq_traffic_profile_t profile) {
     static const char *names[] = {
+        "zero_idle",
         "steady_low",
         "steady_high",
         "bursty",
@@ -103,16 +165,41 @@ const char *irq_traffic_name(irq_traffic_profile_t profile) {
 
 const char *irq_policy_name(irq_baseline_policy_t policy) {
     static const char *names[] = {
-        "no_coalescing",
+        "no_coalescing_oracle",
+        "no_coalescing_cpu_limited",
         "fixed_low_latency",
         "fixed_balanced",
         "fixed_throughput",
         "simple_adaptive",
+        "adaptive_bandit",
     };
     if ((unsigned)policy >= IRQ_POLICY_COUNT) {
         return "invalid";
     }
     return names[policy];
+}
+
+size_t irq_scenario_count(void) {
+    return sizeof(scenarios) / sizeof(scenarios[0]);
+}
+
+const irq_scenario_t *irq_scenario_by_index(size_t index) {
+    if (index >= irq_scenario_count()) {
+        return NULL;
+    }
+    return &scenarios[index];
+}
+
+const irq_scenario_t *irq_scenario_by_name(const char *name) {
+    if (name == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0u; i < irq_scenario_count(); i++) {
+        if (strcmp(name, scenarios[i].name) == 0) {
+            return &scenarios[i];
+        }
+    }
+    return NULL;
 }
 
 bool irq_sim_validate_config(const irq_sim_config_t *cfg, char *err, size_t err_len) {
@@ -150,7 +237,7 @@ static void set_thresholds(irq_sim_t *sim, uint32_t packet_threshold, uint32_t t
     if (timer_threshold >= IRQ_SIM_LATENCY_HIST) {
         timer_threshold = IRQ_SIM_LATENCY_HIST - 1u;
     }
-    if (packet_threshold != sim->cfg.packet_threshold || timer_threshold != sim->cfg.timer_threshold) {
+    if (sim->tick > 0u && (packet_threshold != sim->cfg.packet_threshold || timer_threshold != sim->cfg.timer_threshold)) {
         sim->setting_changes = sat_add_u64(sim->setting_changes, 1u);
     }
     sim->cfg.packet_threshold = packet_threshold;
@@ -184,6 +271,9 @@ static void enqueue_arrival(irq_sim_t *sim) {
     if (!sim->have_first_queued_tick) {
         sim->first_queued_tick = sim->tick;
         sim->have_first_queued_tick = true;
+    }
+    if (sim->ring_count > sim->max_queue_depth) {
+        sim->max_queue_depth = sim->ring_count;
     }
 }
 
@@ -236,6 +326,18 @@ static void service_interrupt(irq_sim_t *sim) {
     }
 }
 
+static void record_queue_depth(irq_sim_t *sim) {
+    uint32_t depth = sim->ring_count;
+    if (depth > IRQ_SIM_MAX_RING) {
+        depth = IRQ_SIM_MAX_RING;
+    }
+    sim->queue_depth_sum = sat_add_u64(sim->queue_depth_sum, sim->ring_count);
+    sim->queue_depth_hist[depth] = sat_add_u64(sim->queue_depth_hist[depth], 1u);
+    if (sim->ring_count > sim->max_queue_depth) {
+        sim->max_queue_depth = sim->ring_count;
+    }
+}
+
 bool irq_sim_step(irq_sim_t *sim) {
     if (sim == NULL || sim->done) {
         return false;
@@ -253,7 +355,7 @@ bool irq_sim_step(irq_sim_t *sim) {
             service_interrupt(sim);
         }
     }
-    sim->queue_depth_sum = sat_add_u64(sim->queue_depth_sum, sim->ring_count);
+    record_queue_depth(sim);
     sim->tick++;
     if (sim->tick >= sim->cfg.episode_ticks) {
         sim->done = true;
@@ -266,8 +368,12 @@ bool irq_sim_apply_baseline(irq_sim_t *sim, irq_baseline_policy_t policy) {
         return false;
     }
     switch (policy) {
-    case IRQ_POLICY_NO_COALESCING:
+    case IRQ_POLICY_NO_COALESCING_ORACLE:
         sim->interrupt_per_packet = true;
+        set_thresholds(sim, 1u, 0u);
+        break;
+    case IRQ_POLICY_NO_COALESCING_CPU_LIMITED:
+        sim->interrupt_per_packet = false;
         set_thresholds(sim, 1u, 0u);
         break;
     case IRQ_POLICY_FIXED_LOW_LATENCY:
@@ -298,6 +404,10 @@ bool irq_sim_apply_baseline(irq_sim_t *sim, irq_baseline_policy_t policy) {
         irq_sim_clear_recent(sim);
         break;
     }
+    case IRQ_POLICY_ADAPTIVE_BANDIT:
+        sim->interrupt_per_packet = false;
+        set_thresholds(sim, 8u, 16u);
+        break;
     case IRQ_POLICY_COUNT:
         return false;
     }
@@ -352,6 +462,39 @@ bool irq_sim_episode_step(irq_sim_t *sim, irq_action_t action, double obs[IRQ_SI
     return isfinite(*reward);
 }
 
+bool irq_sim_run_control_loop(const irq_sim_config_t *cfg,
+                              uint64_t control_interval,
+                              irq_action_selector_fn select_action,
+                              void *ctx,
+                              irq_sim_metrics_t *out) {
+    if (out == NULL || select_action == NULL || control_interval == 0u) {
+        return false;
+    }
+    irq_sim_t sim;
+    if (!irq_sim_reset(&sim, cfg)) {
+        return false;
+    }
+
+    while (!sim.done) {
+        double obs[IRQ_SIM_OBS_SIZE];
+        irq_action_t action = IRQ_ACTION_BALANCED_LOW;
+        if (!irq_sim_observation(&sim, obs) || !select_action(&sim, obs, ctx, &action)) {
+            return false;
+        }
+        if (!irq_sim_apply_action(&sim, action)) {
+            return false;
+        }
+        irq_sim_clear_recent(&sim);
+        for (uint64_t i = 0u; i < control_interval && !sim.done; i++) {
+            if (!irq_sim_step(&sim)) {
+                return false;
+            }
+        }
+    }
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
 static double percentile(const irq_sim_t *sim, double q) {
     if (sim->latency_samples == 0u) {
         return 0.0;
@@ -370,6 +513,46 @@ static double percentile(const irq_sim_t *sim, double q) {
     return (double)(IRQ_SIM_LATENCY_HIST - 1u);
 }
 
+static double queue_percentile(const irq_sim_t *sim, double q) {
+    if (sim->tick == 0u) {
+        return 0.0;
+    }
+    uint64_t rank = (uint64_t)ceil(q * (double)sim->tick);
+    if (rank == 0u) {
+        rank = 1u;
+    }
+    uint64_t seen = 0u;
+    for (uint32_t i = 0u; i <= IRQ_SIM_MAX_RING; i++) {
+        seen = sat_add_u64(seen, sim->queue_depth_hist[i]);
+        if (seen >= rank) {
+            return (double)i;
+        }
+    }
+    return (double)IRQ_SIM_MAX_RING;
+}
+
+irq_reward_components_t irq_sim_reward_components(const irq_sim_metrics_t *metrics) {
+    irq_reward_components_t c;
+    memset(&c, 0, sizeof(c));
+    if (metrics == NULL) {
+        return c;
+    }
+    const double offered = metrics->offered == 0u ? 1.0 : (double)metrics->offered;
+    c.delivered_score = (double)metrics->delivered / offered;
+    c.latency_penalty = metrics->avg_latency / 200.0;
+    c.tail_latency_penalty = metrics->p99_latency / 400.0;
+    c.drop_penalty = 5.0 * ((double)metrics->dropped / offered);
+    c.interrupt_cost_penalty = metrics->interrupt_cost / (offered * 50.0);
+    c.setting_change_penalty = (double)metrics->setting_changes * 0.001;
+    c.unresolved_queue_penalty = 3.0 * ((double)metrics->final_queue_depth / offered);
+    c.total = c.delivered_score - c.latency_penalty - c.tail_latency_penalty - c.drop_penalty -
+              c.interrupt_cost_penalty - c.setting_change_penalty - c.unresolved_queue_penalty;
+    if (!isfinite(c.total)) {
+        c.total = -DBL_MAX;
+    }
+    return c;
+}
+
 irq_sim_metrics_t irq_sim_metrics(const irq_sim_t *sim) {
     irq_sim_metrics_t m;
     memset(&m, 0, sizeof(m));
@@ -381,26 +564,119 @@ irq_sim_metrics_t irq_sim_metrics(const irq_sim_t *sim) {
     m.dropped = sim->dropped;
     m.interrupts = sim->interrupts;
     m.setting_changes = sim->setting_changes;
+    m.latency_samples = sim->latency_samples;
     m.final_queue_depth = sim->ring_count;
+    m.max_queue_depth = sim->max_queue_depth;
     m.interrupt_cost = (double)sim->interrupts * sim->cfg.interrupt_cost;
+    const double offered = m.offered == 0u ? 1.0 : (double)m.offered;
+    m.delivered_ratio = (double)m.delivered / offered;
+    m.drop_ratio = (double)m.dropped / offered;
+    m.interrupts_per_delivered = m.delivered == 0u ? 0.0 : (double)m.interrupts / (double)m.delivered;
+    m.avg_batch_size = m.interrupts == 0u ? 0.0 : (double)m.delivered / (double)m.interrupts;
     m.avg_queue_depth = sim->tick == 0u ? 0.0 : (double)sim->queue_depth_sum / (double)sim->tick;
+    m.p50_queue_depth = queue_percentile(sim, 0.50);
+    m.p95_queue_depth = queue_percentile(sim, 0.95);
+    m.p99_queue_depth = queue_percentile(sim, 0.99);
     m.avg_latency = sim->latency_samples == 0u ? 0.0 : (double)sim->latency_sum / (double)sim->latency_samples;
     m.p50_latency = percentile(sim, 0.50);
     m.p95_latency = percentile(sim, 0.95);
     m.p99_latency = percentile(sim, 0.99);
-    const double offered = m.offered == 0u ? 1.0 : (double)m.offered;
-    const double delivered_score = (double)m.delivered / offered;
-    const double latency_penalty = m.avg_latency / 200.0;
-    const double tail_penalty = m.p99_latency / 400.0;
-    const double unresolved_penalty = 3.0 * ((double)m.final_queue_depth / offered);
-    const double drop_penalty = 5.0 * ((double)m.dropped / offered);
-    const double irq_penalty = m.interrupt_cost / (offered * 50.0);
-    const double change_penalty = (double)m.setting_changes * 0.001;
-    m.reward = delivered_score - latency_penalty - tail_penalty - unresolved_penalty - drop_penalty - irq_penalty - change_penalty;
-    if (!isfinite(m.reward)) {
-        m.reward = -DBL_MAX;
-    }
+    m.reward_components = irq_sim_reward_components(&m);
+    m.reward = m.reward_components.total;
     return m;
+}
+
+static bool run_fixed_config(const irq_sim_config_t *cfg, irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (out == NULL || !irq_sim_reset(&sim, cfg)) {
+        return false;
+    }
+    while (!sim.done) {
+        (void)irq_sim_step(&sim);
+    }
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
+bool irq_tune_eval_profile(irq_sim_config_t base,
+                           irq_traffic_profile_t traffic,
+                           uint32_t packet_threshold,
+                           uint32_t timer_threshold,
+                           uint64_t seed_start,
+                           uint64_t seed_count,
+                           irq_tuning_result_t *out) {
+    if (out == NULL || seed_count == 0u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->packet_threshold = packet_threshold;
+    out->timer_threshold = timer_threshold;
+    base.traffic_profile = traffic;
+    base.packet_threshold = packet_threshold;
+    base.timer_threshold = timer_threshold;
+    char err[96];
+    if (!irq_sim_validate_config(&base, err, sizeof(err))) {
+        return false;
+    }
+
+    double reward_sum = 0.0;
+    double p99_sum = 0.0;
+    double drops_sum = 0.0;
+    double interrupts_sum = 0.0;
+    double delivered_ratio_sum = 0.0;
+    double drop_ratio_sum = 0.0;
+    for (uint64_t i = 0u; i < seed_count; i++) {
+        irq_sim_metrics_t m;
+        base.seed = seed_start + i;
+        if (!run_fixed_config(&base, &m)) {
+            return false;
+        }
+        reward_sum += m.reward;
+        p99_sum += m.p99_latency;
+        drops_sum += (double)m.dropped;
+        interrupts_sum += (double)m.interrupts;
+        delivered_ratio_sum += m.delivered_ratio;
+        drop_ratio_sum += m.drop_ratio;
+    }
+    out->reward = reward_sum / (double)seed_count;
+    out->p99_latency = p99_sum / (double)seed_count;
+    out->drops = drops_sum / (double)seed_count;
+    out->interrupts = interrupts_sum / (double)seed_count;
+    out->delivered_ratio = delivered_ratio_sum / (double)seed_count;
+    out->drop_ratio = drop_ratio_sum / (double)seed_count;
+    return true;
+}
+
+bool irq_tune_eval_all_profiles(irq_sim_config_t cfg,
+                                uint32_t packet_threshold,
+                                uint32_t timer_threshold,
+                                uint64_t seed_start,
+                                uint64_t seed_count,
+                                irq_tuning_result_t per_profile[IRQ_TRAFFIC_COUNT],
+                                double *mean_reward,
+                                double *worst_reward) {
+    if (per_profile == NULL || mean_reward == NULL || worst_reward == NULL) {
+        return false;
+    }
+    *mean_reward = 0.0;
+    *worst_reward = DBL_MAX;
+    for (int t = 0; t < (int)IRQ_TRAFFIC_COUNT; t++) {
+        if (!irq_tune_eval_profile(cfg,
+                                   (irq_traffic_profile_t)t,
+                                   packet_threshold,
+                                   timer_threshold,
+                                   seed_start,
+                                   seed_count,
+                                   &per_profile[t])) {
+            return false;
+        }
+        *mean_reward += per_profile[t].reward;
+        if (per_profile[t].reward < *worst_reward) {
+            *worst_reward = per_profile[t].reward;
+        }
+    }
+    *mean_reward /= (double)IRQ_TRAFFIC_COUNT;
+    return true;
 }
 
 double irq_sim_reward(const irq_sim_t *sim) {
@@ -443,8 +719,74 @@ void irq_sim_clear_recent(irq_sim_t *sim) {
     sim->recent_max_latency = 0u;
 }
 
+static uint64_t bandit_rng_next(uint64_t *rng) {
+    uint64_t x = *rng;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *rng = x == 0u ? 0x9e3779b97f4a7c15ull : x;
+    return *rng;
+}
+
+static irq_action_t bandit_choose_action(const double values[IRQ_ACTION_COUNT], const uint64_t counts[IRQ_ACTION_COUNT], uint64_t *rng) {
+    if ((bandit_rng_next(rng) & 7u) == 0u) {
+        return (irq_action_t)(bandit_rng_next(rng) % IRQ_ACTION_COUNT);
+    }
+    irq_action_t best = IRQ_ACTION_LOW_LATENCY;
+    double best_value = counts[0] == 0u ? DBL_MAX : values[0];
+    for (int i = 1; i < (int)IRQ_ACTION_COUNT; i++) {
+        const double value = counts[i] == 0u ? DBL_MAX : values[i];
+        if (value > best_value) {
+            best_value = value;
+            best = (irq_action_t)i;
+        }
+    }
+    return best;
+}
+
+static void bandit_update(double values[IRQ_ACTION_COUNT], uint64_t counts[IRQ_ACTION_COUNT], irq_action_t action, double reward) {
+    const int idx = (int)action;
+    counts[idx] = sat_add_u64(counts[idx], 1u);
+    const double n = (double)counts[idx];
+    values[idx] += (reward - values[idx]) / n;
+}
+
+static bool irq_sim_run_adaptive_bandit(const irq_sim_config_t *cfg, irq_sim_metrics_t *out) {
+    irq_sim_t sim;
+    if (out == NULL || !irq_sim_reset(&sim, cfg)) {
+        return false;
+    }
+    double values[IRQ_ACTION_COUNT] = {0.0};
+    uint64_t counts[IRQ_ACTION_COUNT] = {0u};
+    uint64_t rng = cfg->seed == 0u ? 0x9e3779b97f4a7c15ull : cfg->seed ^ 0xa5a5a5a5a5a5a5a5ull;
+    const uint64_t control_window = 64u;
+    irq_action_t action = IRQ_ACTION_BALANCED_LOW;
+    (void)irq_sim_apply_action(&sim, action);
+    double window_start_reward = irq_sim_reward(&sim);
+
+    while (!sim.done) {
+        if ((sim.tick % control_window) == 0u && sim.tick > 0u) {
+            const double window_reward = irq_sim_reward(&sim) - window_start_reward;
+            bandit_update(values, counts, action, window_reward);
+            action = bandit_choose_action(values, counts, &rng);
+            if (!irq_sim_apply_action(&sim, action)) {
+                return false;
+            }
+            window_start_reward = irq_sim_reward(&sim);
+        }
+        (void)irq_sim_step(&sim);
+    }
+    const double final_window_reward = irq_sim_reward(&sim) - window_start_reward;
+    bandit_update(values, counts, action, final_window_reward);
+    *out = irq_sim_metrics(&sim);
+    return true;
+}
+
 bool irq_sim_run_baseline(const irq_sim_config_t *cfg, irq_baseline_policy_t policy, irq_sim_metrics_t *out) {
     irq_sim_t sim;
+    if (policy == IRQ_POLICY_ADAPTIVE_BANDIT) {
+        return irq_sim_run_adaptive_bandit(cfg, out);
+    }
     if (out == NULL || !irq_sim_reset(&sim, cfg) || !irq_sim_apply_baseline(&sim, policy)) {
         return false;
     }

@@ -29,6 +29,13 @@ static irq_sim_metrics_t run_direct(irq_sim_config_t cfg) {
     return m;
 }
 
+static bool fixed_action_selector(const irq_sim_t *sim, const double obs[IRQ_SIM_OBS_SIZE], void *ctx, irq_action_t *action) {
+    (void)sim;
+    (void)obs;
+    *action = *(const irq_action_t *)ctx;
+    return true;
+}
+
 static void test_reproducible(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     cfg.traffic_profile = IRQ_TRAFFIC_BURSTY;
@@ -49,7 +56,7 @@ static void test_light_load_no_loss(void) {
     cfg.service_budget = 64u;
     cfg.packet_threshold = 1u;
     cfg.timer_threshold = 0u;
-    irq_sim_metrics_t m = run_cfg(cfg, IRQ_POLICY_NO_COALESCING);
+    irq_sim_metrics_t m = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_CPU_LIMITED);
     require_true(m.dropped == 0u, "no loss under light load");
     require_true(m.final_queue_depth == 0u, "light load drains queue");
 }
@@ -70,10 +77,29 @@ static void test_interrupt_counts(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     cfg.traffic_profile = IRQ_TRAFFIC_STEADY_HIGH;
     cfg.episode_ticks = 3000u;
-    irq_sim_metrics_t no_coal = run_cfg(cfg, IRQ_POLICY_NO_COALESCING);
+    irq_sim_metrics_t no_coal = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_ORACLE);
+    irq_sim_metrics_t cpu_limited = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_CPU_LIMITED);
     irq_sim_metrics_t throughput = run_cfg(cfg, IRQ_POLICY_FIXED_THROUGHPUT);
     require_true(no_coal.interrupts > throughput.interrupts, "no coalescing has more interrupts");
-    require_true(no_coal.interrupts == no_coal.delivered, "no coalescing interrupts per delivered packet");
+    require_true(no_coal.interrupts == no_coal.delivered, "oracle no coalescing interrupts per delivered packet");
+    require_true(cpu_limited.interrupts <= cpu_limited.delivered, "cpu-limited no coalescing batches service budget");
+}
+
+static void test_baseline_comparison_under_overload(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_OVERLOAD_SPIKE;
+    cfg.ring_capacity = 64u;
+    cfg.service_budget = 4u;
+    cfg.episode_ticks = 1200u;
+    irq_sim_metrics_t oracle = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_ORACLE);
+    irq_sim_metrics_t cpu_limited = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_CPU_LIMITED);
+    irq_sim_metrics_t balanced = run_cfg(cfg, IRQ_POLICY_FIXED_BALANCED);
+    irq_sim_metrics_t throughput = run_cfg(cfg, IRQ_POLICY_FIXED_THROUGHPUT);
+    require_true(oracle.delivered >= cpu_limited.delivered, "oracle delivers at least cpu-limited");
+    require_true(cpu_limited.dropped > 0u, "cpu-limited no coalescing can drop under overload");
+    require_true(balanced.offered == cpu_limited.offered, "balanced sees same offered load");
+    require_true(throughput.offered == cpu_limited.offered, "throughput sees same offered load");
+    require_true(cpu_limited.interrupts <= cfg.episode_ticks, "cpu-limited baseline has at most one interrupt per tick");
 }
 
 static void test_timer_fires_below_threshold(void) {
@@ -122,6 +148,21 @@ static void test_adaptive_changes(void) {
     require_true(m.setting_changes > 1u, "adaptive changes settings");
 }
 
+static void test_adaptive_bandit_deterministic(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_BURSTY;
+    cfg.episode_ticks = 1500u;
+    cfg.seed = 77u;
+    irq_sim_metrics_t a = run_cfg(cfg, IRQ_POLICY_ADAPTIVE_BANDIT);
+    irq_sim_metrics_t b = run_cfg(cfg, IRQ_POLICY_ADAPTIVE_BANDIT);
+    require_true(a.offered == b.offered, "bandit offered reproducible");
+    require_true(a.delivered == b.delivered, "bandit delivered reproducible");
+    require_true(a.dropped == b.dropped, "bandit dropped reproducible");
+    require_true(a.interrupts == b.interrupts, "bandit interrupts reproducible");
+    require_true(a.setting_changes > 0u, "bandit changes settings");
+    require_true(isfinite(a.reward), "bandit reward finite");
+}
+
 static void test_wraparound_accounting(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     cfg.traffic_profile = IRQ_TRAFFIC_STEADY_HIGH;
@@ -132,6 +173,18 @@ static void test_wraparound_accounting(void) {
     cfg.episode_ticks = 2000u;
     irq_sim_metrics_t m = run_cfg(cfg, IRQ_POLICY_FIXED_LOW_LATENCY);
     require_true(m.offered == m.delivered + m.dropped + m.final_queue_depth, "packet accounting holds");
+}
+
+static void test_zero_idle_profile(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_ZERO_IDLE;
+    irq_sim_metrics_t m = run_cfg(cfg, IRQ_POLICY_FIXED_BALANCED);
+    require_true(m.offered == 0u, "zero idle offers no packets");
+    require_true(m.delivered == 0u, "zero idle delivers no packets");
+    require_true(m.dropped == 0u, "zero idle drops no packets");
+    require_true(m.interrupts == 0u, "zero idle has no interrupts");
+    require_true(m.final_queue_depth == 0u, "zero idle final queue empty");
+    require_true(m.reward == 0.0, "zero idle reward neutral");
 }
 
 static void test_rl_api(void) {
@@ -175,6 +228,30 @@ static void test_rl_api(void) {
     require_true(irq_sim_metrics(&sim_a).delivered == irq_sim_metrics(&sim_b).delivered, "step metrics reproducible");
 }
 
+static void test_control_loop_fixed_interval(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_BURSTY;
+    cfg.packet_threshold = 4u;
+    cfg.timer_threshold = 8u;
+    irq_sim_metrics_t direct = run_direct(cfg);
+
+    cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_BURSTY;
+    irq_action_t action = IRQ_ACTION_BALANCED_LOW;
+    irq_sim_metrics_t controlled;
+    require_true(irq_sim_run_control_loop(&cfg, 32u, fixed_action_selector, &action, &controlled), "control loop run");
+    require_true(controlled.offered == direct.offered, "control loop offered matches direct");
+    require_true(controlled.delivered == direct.delivered, "control loop delivered matches direct");
+    require_true(controlled.dropped == direct.dropped, "control loop dropped matches direct");
+    require_true(controlled.interrupts == direct.interrupts, "control loop interrupts matches direct");
+    require_true(controlled.setting_changes == 0u, "fixed repeated action has no runtime changes");
+    require_true(controlled.reward == direct.reward, "control loop reward matches direct");
+
+    require_true(!irq_sim_run_control_loop(&cfg, 0u, fixed_action_selector, &action, &controlled), "zero interval rejected");
+    require_true(!irq_sim_run_control_loop(&cfg, 32u, NULL, &action, &controlled), "null selector rejected");
+    require_true(!irq_sim_run_control_loop(&cfg, 32u, fixed_action_selector, &action, NULL), "null metrics rejected");
+}
+
 static void test_config_validation(void) {
     irq_sim_config_t cfg = irq_sim_default_config();
     char err[128];
@@ -204,10 +281,94 @@ static void test_unresolved_queue_penalty(void) {
     irq_sim_metrics_t queued = run_cfg(cfg, IRQ_POLICY_FIXED_THROUGHPUT);
     cfg.packet_threshold = 1u;
     cfg.timer_threshold = 0u;
-    irq_sim_metrics_t drained = run_cfg(cfg, IRQ_POLICY_NO_COALESCING);
+    irq_sim_metrics_t drained = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_ORACLE);
     require_true(queued.final_queue_depth > 0u, "queued packets exist");
     require_true(drained.final_queue_depth == 0u, "no coalescing drains packets");
     require_true(queued.reward < drained.reward, "unresolved queue lowers reward");
+}
+
+static void test_edge_configs(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.ring_capacity = IRQ_SIM_MAX_RING;
+    cfg.service_budget = IRQ_SIM_MAX_RING;
+    cfg.packet_threshold = IRQ_SIM_MAX_RING;
+    cfg.timer_threshold = 0u;
+    cfg.episode_ticks = 1u;
+    irq_sim_metrics_t max_ring = run_direct(cfg);
+    require_true(max_ring.offered == max_ring.delivered + max_ring.dropped + max_ring.final_queue_depth, "max ring accounting");
+
+    cfg = irq_sim_default_config();
+    cfg.ring_capacity = 1u;
+    cfg.service_budget = 1u;
+    cfg.packet_threshold = 1u;
+    cfg.timer_threshold = 0u;
+    cfg.episode_ticks = 500u;
+    irq_sim_metrics_t ring_one = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_CPU_LIMITED);
+    require_true(ring_one.max_queue_depth <= 1u, "ring capacity one respected");
+    require_true(ring_one.offered == ring_one.delivered + ring_one.dropped + ring_one.final_queue_depth, "ring one accounting");
+
+    cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_STEADY_HIGH;
+    cfg.service_budget = 1u;
+    cfg.packet_threshold = cfg.ring_capacity;
+    cfg.timer_threshold = 0u;
+    irq_sim_metrics_t budget_one = run_direct(cfg);
+    require_true(budget_one.avg_batch_size <= 1.0, "service budget one bounds batch size");
+}
+
+static void test_reward_components(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_OVERLOAD_SPIKE;
+    cfg.ring_capacity = 16u;
+    cfg.service_budget = 1u;
+    cfg.episode_ticks = 1000u;
+    irq_sim_metrics_t dropping = run_cfg(cfg, IRQ_POLICY_FIXED_THROUGHPUT);
+    require_true(isfinite(dropping.reward_components.total), "reward components finite");
+    require_true(dropping.reward_components.drop_penalty > dropping.reward_components.interrupt_cost_penalty, "drops dominate interrupt penalty under overload");
+
+    cfg = irq_sim_default_config();
+    cfg.traffic_profile = IRQ_TRAFFIC_STEADY_HIGH;
+    cfg.packet_threshold = 64u;
+    cfg.timer_threshold = 64u;
+    cfg.episode_ticks = 500u;
+    irq_sim_metrics_t queued = run_direct(cfg);
+    require_true(queued.final_queue_depth > 0u, "queued final depth exists");
+    require_true(queued.reward_components.unresolved_queue_penalty > 0.0, "unresolved queue penalized");
+
+    cfg = irq_sim_default_config();
+    irq_sim_metrics_t irq_heavy = run_cfg(cfg, IRQ_POLICY_NO_COALESCING_ORACLE);
+    require_true(irq_heavy.reward_components.interrupt_cost_penalty > 0.0, "interrupt-heavy mode pays irq penalty");
+}
+
+static void test_scenarios(void) {
+    require_true(irq_scenario_count() >= 7u, "scenario suite present");
+    const irq_scenario_t *s = irq_scenario_by_name("small_rx_ring_stress");
+    require_true(s != NULL, "scenario lookup by name");
+    irq_sim_metrics_t m = run_cfg(s->cfg, IRQ_POLICY_FIXED_BALANCED);
+    require_true(isfinite(m.reward), "scenario run finite");
+    require_true(irq_scenario_by_index(irq_scenario_count()) == NULL, "scenario index bounds");
+}
+
+static void test_tuning_eval_deterministic(void) {
+    irq_sim_config_t cfg = irq_sim_default_config();
+    cfg.episode_ticks = 1000u;
+    irq_tuning_result_t fast_a;
+    irq_tuning_result_t fast_b;
+    irq_tuning_result_t slow;
+    require_true(irq_tune_eval_profile(cfg, IRQ_TRAFFIC_STEADY_LOW, 1u, 0u, 1u, 4u, &fast_a), "tune eval fast a");
+    require_true(irq_tune_eval_profile(cfg, IRQ_TRAFFIC_STEADY_LOW, 1u, 0u, 1u, 4u, &fast_b), "tune eval fast b");
+    require_true(irq_tune_eval_profile(cfg, IRQ_TRAFFIC_STEADY_LOW, 64u, 64u, 1u, 4u, &slow), "tune eval slow");
+    require_true(fast_a.reward == fast_b.reward, "tune eval deterministic reward");
+    require_true(fast_a.interrupts == fast_b.interrupts, "tune eval deterministic interrupts");
+    require_true(fast_a.reward > slow.reward, "tune eval ranks low-latency candidate higher for sparse traffic");
+
+    irq_tuning_result_t per_profile[IRQ_TRAFFIC_COUNT];
+    double mean = 0.0;
+    double worst = 0.0;
+    require_true(irq_tune_eval_all_profiles(cfg, 1u, 0u, 1u, 2u, per_profile, &mean, &worst), "tune eval all profiles");
+    require_true(isfinite(mean), "mean reward finite");
+    require_true(isfinite(worst), "worst reward finite");
+    require_true(per_profile[IRQ_TRAFFIC_ZERO_IDLE].reward == 0.0, "zero idle tuning neutral");
 }
 
 int main(void) {
@@ -216,13 +377,21 @@ int main(void) {
     test_light_load_no_loss();
     test_overflow_drops();
     test_interrupt_counts();
+    test_baseline_comparison_under_overload();
     test_timer_fires_below_threshold();
     test_packet_threshold_before_timer();
     test_timer_increases_latency();
     test_adaptive_changes();
+    test_adaptive_bandit_deterministic();
     test_wraparound_accounting();
+    test_zero_idle_profile();
     test_rl_api();
+    test_control_loop_fixed_interval();
     test_unresolved_queue_penalty();
+    test_edge_configs();
+    test_reward_components();
+    test_scenarios();
+    test_tuning_eval_deterministic();
     puts("ok");
     return 0;
 }
