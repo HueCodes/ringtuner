@@ -16,4 +16,5 @@ jobs:
       - run: make compare
       - run: make pareto
       - run: make trace
+      - run: make build/tune
       - run: build/tune --scenario all --traffic scenario --train-seeds 1 --eval-seeds 1 --csv results/ci-tuning.csv
