@@ -32,8 +32,10 @@ make test
 Optional sanitizer target:
 
 ```sh
-make asan
+make ubsan
 ```
+
+The sanitizer target runs the fast core test subset under UndefinedBehaviorSanitizer. `make asan` is kept as a compatibility alias for the same local check. `make test` runs the full deterministic test suite, including slower tuning checks.
 
 ## Run Baselines
 
@@ -119,7 +121,8 @@ Example output:
 ```text
 scenario                  traffic          policy                       offered delivered   drops  finalq interrupts  irq/del      p50      p95      p99    reward       ms
 default                   steady_low       no_coalescing_oracle             826       826       0       0     826    1.000      1.0      1.0      1.0     0.973     0.06
-default                   steady_low       fixed_balanced                   826       826       0       0     231    0.280     12.0     17.0     17.0     0.898     0.02
+default                   steady_low       fixed_balanced                   826       826       0       0     231    0.280     12.0     17.0     17.0     0.898     0.03
+default                   steady_low       napi_polling                     826       825       0       1     203    0.246     10.0     17.0     17.0     0.900     0.03
 default                   overload_spike   no_coalescing_cpu_limited      42548     32707    9841       0    1489    0.046      8.0      8.0      8.0    -0.447     0.20
 ```
 
@@ -130,7 +133,7 @@ default                   overload_spike   no_coalescing_cpu_limited      42548 
 - Deterministic seeded traffic profiles, including a zero-arrival edge profile.
 - Fixed RX ring capacity.
 - Packet threshold and timer threshold coalescing.
-- CPU drains up to `service_budget` packets per interrupt.
+- CPU drains up to `service_budget` packets per interrupt or polling tick.
 - Metrics include offered packets, delivered and drop ratios, interrupts per delivered packet, average batch size, final and max queue depth, queue occupancy percentiles, latency percentiles, unresolved queue depth, reward components, and total reward.
 - Scenario definitions include threshold ranges for scenario-scoped and all-scenario tuning. The tuner can optimize all traffic profiles, a named traffic profile, or each scenario's declared traffic profile.
 - Trace replay supports deterministic `traces/*.csv` arrival streams for reproducible workload fixtures.
@@ -155,4 +158,4 @@ This is not a hardware-accurate NIC model. It omits packet sizes, DMA descriptor
 
 ## Next Step
 
-Compare a real RL learner against the grid-search and adaptive bandit baselines, then wrap the standalone C core as a PufferLib Ocean environment.
+Tighten the standalone validation and public narrative, then compare a real RL learner against the grid-search and adaptive bandit baselines before wrapping the C core as a PufferLib Ocean environment.

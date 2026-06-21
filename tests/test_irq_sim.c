@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void require_true(bool ok, const char *msg) {
     if (!ok) {
@@ -319,7 +320,9 @@ static void test_napi_polling(void) {
     require_true(irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_NAPI_POLLING, arrivals, cfg.episode_ticks, &napi),
                  "napi trace run");
     require_true(napi.offered == 25u, "napi trace offered packet count");
-    require_true(napi.delivered > 0u, "napi trace delivers packets");
+    require_true(napi.delivered == 24u, "napi trace polls through burst");
+    require_true(napi.final_queue_depth == 1u, "napi trace leaves sparse tail queued");
+    require_true(napi.interrupts == 1u, "napi trace counts one hardware interrupt for burst");
 }
 
 static void test_config_validation(void) {
@@ -511,8 +514,20 @@ static void test_tuning_eval_profile_selection(void) {
                  "empty traffic selection rejected");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    const bool smoke = argc > 1 && argv[1] != NULL && strcmp(argv[1], "--smoke") == 0;
+
     test_config_validation();
+    if (smoke) {
+        test_light_load_no_loss();
+        test_zero_idle_profile();
+        test_rl_api();
+        test_trace_arrivals();
+        test_napi_polling();
+        puts("ok");
+        return 0;
+    }
+
     test_reproducible();
     test_light_load_no_loss();
     test_overflow_drops();

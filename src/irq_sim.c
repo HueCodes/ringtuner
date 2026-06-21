@@ -801,37 +801,6 @@ static void bandit_update(double values[IRQ_ACTION_COUNT], uint64_t counts[IRQ_A
     values[idx] += (reward - values[idx]) / n;
 }
 
-static bool irq_sim_run_adaptive_bandit(const irq_sim_config_t *cfg, irq_sim_metrics_t *out) {
-    irq_sim_t sim;
-    if (out == NULL || !irq_sim_reset(&sim, cfg)) {
-        return false;
-    }
-    double values[IRQ_ACTION_COUNT] = {0.0};
-    uint64_t counts[IRQ_ACTION_COUNT] = {0u};
-    uint64_t rng = cfg->seed == 0u ? 0x9e3779b97f4a7c15ull : cfg->seed ^ 0xa5a5a5a5a5a5a5a5ull;
-    const uint64_t control_window = 64u;
-    irq_action_t action = IRQ_ACTION_BALANCED_LOW;
-    (void)irq_sim_apply_action(&sim, action);
-    double window_start_reward = irq_sim_reward(&sim);
-
-    while (!sim.done) {
-        if ((sim.tick % control_window) == 0u && sim.tick > 0u) {
-            const double window_reward = irq_sim_reward(&sim) - window_start_reward;
-            bandit_update(values, counts, action, window_reward);
-            action = bandit_choose_action(values, counts, &rng);
-            if (!irq_sim_apply_action(&sim, action)) {
-                return false;
-            }
-            window_start_reward = irq_sim_reward(&sim);
-        }
-        (void)irq_sim_step(&sim);
-    }
-    const double final_window_reward = irq_sim_reward(&sim) - window_start_reward;
-    bandit_update(values, counts, action, final_window_reward);
-    *out = irq_sim_metrics(&sim);
-    return true;
-}
-
 static bool trace_arrivals_at(const uint32_t *arrivals, uint64_t arrival_ticks, uint64_t tick, uint32_t *out) {
     if (out == NULL) {
         return false;
@@ -840,10 +809,11 @@ static bool trace_arrivals_at(const uint32_t *arrivals, uint64_t arrival_ticks, 
     return true;
 }
 
-static bool irq_sim_run_adaptive_bandit_trace(const irq_sim_config_t *cfg,
-                                              const uint32_t *arrivals,
-                                              uint64_t arrival_ticks,
-                                              irq_sim_metrics_t *out) {
+static bool irq_sim_run_adaptive_bandit_impl(const irq_sim_config_t *cfg,
+                                             const uint32_t *arrivals,
+                                             uint64_t arrival_ticks,
+                                             bool use_trace,
+                                             irq_sim_metrics_t *out) {
     irq_sim_t sim;
     if (out == NULL || !irq_sim_reset(&sim, cfg)) {
         return false;
@@ -867,8 +837,12 @@ static bool irq_sim_run_adaptive_bandit_trace(const irq_sim_config_t *cfg,
             }
             window_start_reward = irq_sim_reward(&sim);
         }
-        if (!trace_arrivals_at(arrivals, arrival_ticks, sim.tick, &tick_arrivals) ||
-            !irq_sim_step_arrivals(&sim, tick_arrivals)) {
+        if (use_trace) {
+            if (!trace_arrivals_at(arrivals, arrival_ticks, sim.tick, &tick_arrivals) ||
+                !irq_sim_step_arrivals(&sim, tick_arrivals)) {
+                return false;
+            }
+        } else if (!irq_sim_step(&sim)) {
             return false;
         }
     }
@@ -876,6 +850,17 @@ static bool irq_sim_run_adaptive_bandit_trace(const irq_sim_config_t *cfg,
     bandit_update(values, counts, action, final_window_reward);
     *out = irq_sim_metrics(&sim);
     return true;
+}
+
+static bool irq_sim_run_adaptive_bandit(const irq_sim_config_t *cfg, irq_sim_metrics_t *out) {
+    return irq_sim_run_adaptive_bandit_impl(cfg, NULL, 0u, false, out);
+}
+
+static bool irq_sim_run_adaptive_bandit_trace(const irq_sim_config_t *cfg,
+                                              const uint32_t *arrivals,
+                                              uint64_t arrival_ticks,
+                                              irq_sim_metrics_t *out) {
+    return irq_sim_run_adaptive_bandit_impl(cfg, arrivals, arrival_ticks, true, out);
 }
 
 static bool irq_sim_step_napi_arrivals(irq_sim_t *sim, uint32_t arrivals, bool *polling, uint32_t *idle_polls) {

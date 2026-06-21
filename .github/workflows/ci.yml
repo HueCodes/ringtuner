@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make test
+      - run: make ubsan
       - run: make compare
       - run: make pareto
       - run: make trace

@@ -10,7 +10,7 @@
 
 - Realism: version 1 is intentionally one queue, discrete ticks, and simplified coalescing. Limitations are explicit in `docs/design.md`.
 - Implementability: all required state maps to fixed-size C structs and deterministic traffic generators.
-- Overcomplication: packet sizes, multi-queue, NAPI, DMA, PCIe, and hardware calibration are deferred.
+- Overcomplication: packet sizes, multi-queue, DMA, PCIe, and hardware calibration are deferred. NAPI-style polling is modeled only as a simplified scheduling baseline.
 
 ## Milestone 2: Simulator
 
@@ -64,7 +64,7 @@
 Simulator correctness risks:
 
 - The model is still single-queue and tick-based. It is useful for control experiments, not NIC fidelity claims.
-- CPU service is compressed into one tick. `service_budget` bounds packet delivery per interrupt, but the model does not simulate service time, NAPI polling, or IRQ affinity.
+- CPU service is compressed into one tick. `service_budget` bounds packet delivery per interrupt or polling tick, but the model does not simulate explicit service time or IRQ affinity.
 - `no_coalescing_oracle` is intentionally idealized and must remain labeled as an oracle in output and docs.
 - Traffic profiles are deterministic and synthetic. They exercise control behavior, but they are not trace-derived.
 

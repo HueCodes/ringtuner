@@ -1,6 +1,7 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O2
-DBGFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O0 -g -fsanitize=address,undefined
+DBGFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O0 -g
+UBSANFLAGS ?= $(DBGFLAGS) -fsanitize=undefined
 CPPFLAGS ?= -Isrc
 LDLIBS ?= -lm
 BUILD := build
@@ -13,7 +14,7 @@ COMPARE := $(BUILD)/compare
 PARETO := $(BUILD)/pareto
 REPORT := $(BUILD)/report
 
-.PHONY: all test run tune tune-scenario tune-scenarios tune-scenario-traffic compare pareto trace report clean asan dirs
+.PHONY: all test run tune tune-scenario tune-scenarios tune-scenario-traffic compare pareto trace report clean ubsan asan dirs
 
 all: $(APP)
 
@@ -99,9 +100,11 @@ report: test $(APP) $(TUNE) $(COMPARE) $(PARETO) $(REPORT)
 	$(PARETO) --scenario all --traffic scenario --csv results/pareto.csv
 	$(REPORT) --out results/report.md
 
-asan: | dirs
-	$(CC) $(CPPFLAGS) $(DBGFLAGS) src/irq_sim.c tests/test_irq_sim.c $(LDLIBS) -o $(BUILD)/test_irq_sim_asan
-	$(BUILD)/test_irq_sim_asan
+ubsan: | dirs
+	$(CC) $(CPPFLAGS) $(UBSANFLAGS) src/irq_sim.c tests/test_irq_sim.c $(LDLIBS) -o $(BUILD)/test_irq_sim_ubsan
+	$(BUILD)/test_irq_sim_ubsan --smoke
+
+asan: ubsan
 
 clean:
 	rm -rf $(BUILD)

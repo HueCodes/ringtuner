@@ -114,8 +114,11 @@ Baseline policies:
 - fixed throughput
 - simple adaptive
 - adaptive bandit
+- NAPI-style polling
 
 The simple adaptive baseline updates every 32 ticks. The adaptive bandit baseline uses deterministic epsilon-greedy selection over the discrete action set with a 64-tick control window. It is an offline adaptive controller baseline, not PPO or deep RL. RL comparisons should use a stated control interval, since per-tick actions have more control authority.
+
+The NAPI-style polling baseline enters poll mode after an interrupt and drains up to `service_budget` packets on later ticks without counting those polls as hardware interrupts. Poll mode exits after two idle polls. This is a scheduler-level approximation, not a Linux driver model.
 
 ## Control Interval
 
@@ -124,10 +127,11 @@ The simple adaptive baseline updates every 32 ticks. The adaptive bandit baselin
 ## Limitations
 
 - One queue only.
-- No packet sizes, DMA descriptors, cache effects, NAPI polling, IRQ affinity, or PCIe modeling.
+- No packet sizes, DMA descriptors, cache effects, IRQ affinity, or PCIe modeling.
 - CPU service time is compressed into one tick.
 - Packet classes affect arrival shape only.
 - Coalescing state is simpler than real NIC hardware.
+- NAPI-style polling is simplified to poll-mode scheduling and batch draining.
 - The no-coalescing oracle baseline is not a hardware timing claim.
 - Metrics are simulator metrics, not hardware claims.
 

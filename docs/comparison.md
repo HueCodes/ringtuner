@@ -11,7 +11,7 @@ make compare
 The comparison flow:
 
 - tunes packet and timer thresholds on train seeds for each scenario's declared traffic profile
-- evaluates fixed low latency, fixed balanced, fixed throughput, simple adaptive, adaptive bandit, and tuned direct thresholds on held-out seeds
+- evaluates fixed low latency, fixed balanced, fixed throughput, simple adaptive, adaptive bandit, NAPI-style polling, and tuned direct thresholds on held-out seeds
 - reports reward delta versus `fixed_balanced`
 - writes `results/comparison.csv`
 
