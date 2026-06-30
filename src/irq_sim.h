@@ -144,8 +144,6 @@ struct irq_sim {
     uint64_t recent_latency_samples;
     uint64_t recent_max_latency;
     uint32_t max_queue_depth;
-    uint32_t last_packet_threshold;
-    uint32_t last_timer_threshold;
     bool interrupt_per_packet;
     bool done;
 };

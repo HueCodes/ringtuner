@@ -295,6 +295,8 @@ static void test_trace_arrivals(void) {
     require_true(overloaded.dropped > 0u || overloaded.final_queue_depth > 0u, "trace stress creates pressure");
     require_true(!irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_COUNT, arrivals, cfg.episode_ticks, &overloaded),
                  "invalid trace policy rejected");
+    require_true(!irq_sim_run_baseline_trace(&cfg, IRQ_POLICY_FIXED_BALANCED, NULL, cfg.episode_ticks, &overloaded),
+                 "null trace arrivals rejected when ticks are present");
 }
 
 static void test_napi_polling(void) {

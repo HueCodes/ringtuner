@@ -9,6 +9,7 @@ BUILD := build
 SIM_OBJS := $(BUILD)/irq_sim.o
 APP := $(BUILD)/ringtuner
 TEST := $(BUILD)/test_irq_sim
+CLI_TEST := tests/test_cli.sh
 TUNE := $(BUILD)/tune
 COMPARE := $(BUILD)/compare
 PARETO := $(BUILD)/pareto
@@ -60,8 +61,9 @@ $(BUILD)/test_irq_sim.o: tests/test_irq_sim.c src/irq_sim.h | dirs
 $(TEST): $(SIM_OBJS) $(BUILD)/test_irq_sim.o
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
 
-test: $(TEST)
+test: $(TEST) $(APP) $(TUNE) $(COMPARE) $(PARETO) $(REPORT)
 	$(TEST)
+	$(CLI_TEST)
 
 run: $(APP)
 	$(APP)

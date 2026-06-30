@@ -253,8 +253,6 @@ bool irq_sim_reset(irq_sim_t *sim, const irq_sim_config_t *cfg) {
     memset(sim, 0, sizeof(*sim));
     sim->cfg = *cfg;
     sim->rng = cfg->seed == 0u ? 0x9e3779b97f4a7c15ull : cfg->seed;
-    sim->last_packet_threshold = cfg->packet_threshold;
-    sim->last_timer_threshold = cfg->timer_threshold;
     return true;
 }
 
@@ -803,6 +801,9 @@ static void bandit_update(double values[IRQ_ACTION_COUNT], uint64_t counts[IRQ_A
 
 static bool trace_arrivals_at(const uint32_t *arrivals, uint64_t arrival_ticks, uint64_t tick, uint32_t *out) {
     if (out == NULL) {
+        return false;
+    }
+    if (arrivals == NULL && arrival_ticks > 0u) {
         return false;
     }
     *out = (arrivals != NULL && tick < arrival_ticks) ? arrivals[tick] : 0u;
